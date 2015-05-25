@@ -1,0 +1,8 @@
+{application, llp,
+ [
+  {description, "LLP proto"},
+  {vsn, git},
+  {modules, []},
+  {registered, []},
+  {applications, [ kernel, stdlib ]}
+ ]}.
