@@ -18,14 +18,90 @@
 
 -module(llp).
 
+-export ([decode/2]).
+
 -export([base_header/1, data_channel_req_spec_header/1, data_channel_resp_spec_header/1,
          control_request_spec_header/1, control_response_spec_header/1, flags/1,
          control_pack_request/4, control_pack_response/4, data_pack_request/4, data_pack_response/4]).
 
--include_lib("common/include/synapse.hrl").
 -include_lib("llp/include/llp.hrl").
 -include_lib("llsn/include/llsn.hrl").
 -include_lib("common/include/log.hrl").
+
+% PROTO VERSION 1
+decode( <<?LLP_PROTO_MAGIC:3/big-unsigned-integer,
+          ?LLP_PROTO_V1:5/big-unsigned-integer,
+          Packet/binary>>, Link ) ->
+    ?DBG("============= >>> LLPv1 received chunk: ~p bytes",  [byte_size(Packet)]),
+    case decode_frame(?LLP_PROTO_V1, Packet, Link) of
+        {rest, Rest} -> decode(Rest, Link);
+        Result       -> Result
+    end.
+
+decode_frame(?LLP_PROTO_V1 = ProtoVsn,
+             <<
+                ChannelType:3/big-unsigned-integer,
+                PacketType:5/big-unsigned-integer,
+                FrameLength:16/big-unsigned-integer,
+                IsStartFrame:1/big-unsigned-integer,
+                IsLastFrame:1/big-unsigned-integer,
+                Ttl:5/big-unsigned-integer,
+                _Reserved:1/big-unsigned-integer,
+                PacketA/binary
+             >>, Link) ->
+
+    {FrameNumber,     PacketB} = llsn:decode_UNUMBER(PacketA),
+    {Seq,             PacketC} = llsn:decode_UNUMBER(PacketB),
+    {FromPlatformId,  PacketD} = llsn:decode_UNUMBER(PacketC),
+    {FromLocalNodeId, PacketE} = llsn:decode_UNUMBER(PacketD),
+    {FromSchemeId,    Packet}  = llsn:decode_UNUMBER(PacketE),
+
+    ?DBG("ChannelType: ~p~n",    [ChannelType]),
+    ?DBG("PacketType: ~p~n",     [PacketType]),
+    ?DBG("FrameNumber: ~p~n",    [FrameNumber]),
+    ?DBG("FrameLength: ~p~n",    [FrameLength]),
+    ?DBG("Seq: ~p~n",            [Seq]),
+    ?DBG("FromPlatformId: ~p~n", [FromPlatformId]),
+    ?DBG("FromLocalNodeId: ~p~n",[FromLocalNodeId]),
+    ?DBG("FromSchemeId: ~p~n",   [FromSchemeId]),
+
+    TailBytes = FrameLength - byte_size(Packet),
+
+    case TailBytes > 0 of
+        true ->
+            {tail, TailBytes};
+        false ->
+            case TailBytes < 0 of
+                true ->
+                    <<Frame:FrameLength/binary-unit:8, Rest/binary>> = Packet,
+                    Result = {rest, Rest};
+                false ->
+                    Frame = Packet,
+                    Result = ok
+            end,
+            gen_server:call(Link#link.channel_handler_pid,
+                            #llp_raw_request{
+                                vsn              = ProtoVsn,
+                                channeltype      = ChannelType,
+                                packettype       = PacketType,
+                                flags            = {IsStartFrame, IsLastFrame, Ttl},
+                                frame_number     = FrameNumber,
+                                seq              = Seq,
+                                from_platform_id = FromPlatformId,
+                                from_node_id     = FromLocalNodeId,
+                                from_scheme_id   = FromSchemeId,
+                                frame            = Frame,
+                                link             = Link
+                            }),
+
+            Result
+    end;
+
+decode_frame(?LLP_PROTO_V1 = ProtoVsn, Packet, Link) ->
+    {header, <<?LLP_PROTO_MAGIC:3/big-unsigned-integer,
+               ?LLP_PROTO_V1:5/big-unsigned-integer,
+               Packet/binary>>}.
+
 
 control_pack_request(#base_header_v1{} = BaseHeaderDeclaration,
                      #control_request_spec_header_v1{} = SpecHeaderDeclaration,
